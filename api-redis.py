@@ -2,8 +2,14 @@ from fastapi import FastAPI, HTTPException
 from typing import Optional
 from pydantic import BaseModel
 import mysql.connector
+import redis
+import json
+from datetime import datetime
 
 app = FastAPI()
+
+# Initialize the Redis Client
+redis_client = redis.Redis(host='localhost', port=6379, db=0)
 
 # Database Configuration
 db_config = {
@@ -13,6 +19,14 @@ db_config = {
     "database": "ORG",
     "port": "3306"
 }
+
+
+# Define custom JSON encoder class: Required for the datetime
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 # Connect to MySQL Database
@@ -60,30 +74,62 @@ mysql> describe Worker;
 
 @app.get("/get-all")
 def get_all_worker():
-    cnx = connect_db()
-    cursor = cnx.cursor(dictionary=True)
-    try:
-        query = "SELECT * FROM Worker"
-        cursor.execute(query)
-        workers = cursor.fetchall()
-        return workers
-    finally:
-        cursor.close()
-        cnx.close()
+    # Check if data exists in Redis cache
+    cached_data = redis_client.get('all_workers')
+
+    print("Cached_Date Here:", cached_data)
+
+    if cached_data:
+        # If data exists, return it from cache
+        workers = json.loads(cached_data)
+    else:
+        print("In the DB")
+        cnx = connect_db()
+        cursor = cnx.cursor(dictionary=True)
+        try:
+            query = "SELECT * FROM Worker"
+            cursor.execute(query)
+            workers = cursor.fetchall()
+
+            # Store data in Redis cache for future requests
+            redis_client.set('all_workers', json.dumps(
+                workers, cls=CustomJSONEncoder))
+
+        finally:
+            cursor.close()
+            cnx.close()
+
+    return workers
 
 
 @app.get("/get-by-id/{worker_id}")
 def get_by_id(worker_id: int):
-    cnx = connect_db()
-    cursor = cnx.cursor(dictionary=True)
-    try:
-        query = "SELECT * FROM Worker where worker_id ="+str(worker_id)
-        cursor.execute(query)
-        workers = cursor.fetchall()
-        return workers
-    finally:
-        cursor.close()
-        cnx.close()
+    # Check if data exists in Redis cache
+    cached_data = redis_client.get(f'worker_{worker_id}')
+    print("Cached_Date ID Here:", cached_data)
+
+    if cached_data:
+        # If data exists, return it from cache
+        worker = json.loads(cached_data)
+    else:
+        print("In the DB")
+
+        cnx = connect_db()
+        cursor = cnx.cursor(dictionary=True)
+        try:
+            query = f"SELECT * FROM Worker where worker_id ={worker_id}"
+            cursor.execute(query)
+            worker = cursor.fetchone()
+
+            # Store data in Redis cache for future requests
+            redis_client.set(f'worker_{worker_id}', json.dumps(
+                worker, cls=CustomJSONEncoder))
+
+        finally:
+            cursor.close()
+            cnx.close()
+
+    return worker
 
 
 @app.post("/create")
